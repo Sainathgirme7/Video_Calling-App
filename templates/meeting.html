@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meeting Room</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .video-container {
+            position: relative;
+            height: 300px;
+            background-color: #000;
+            margin-bottom: 10px;
+        }
+        .video-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            display: flex;
+            gap: 10px;
+        }
+        .controls button {
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        .controls button:hover {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+        .video-preview {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            width: 120px;
+            height: 90px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 8px;
+        }
+        .video-preview video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .username-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            text-align: center;
+            padding: 5px;
+        }
+        .copy-link-btn {
+            margin-top: 10px;
+        }
+        .copy-link-btn button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .copy-link-btn button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>Meeting Room: {{ room }}</h1>
+            <button class="btn btn-danger" onclick="leaveRoom()">Leave Room</button>
+        </div>
+
+        <div id="messages" class="alert alert-info d-none"></div>
+
+        <div class="copy-link-btn">
+            <input type="text" id="roomId" class="form-control" readonly value="{{ room }}">
+            <button class="btn" onclick="copyRoomId()">Copy Meeting Room ID</button>
+        </div>
+
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <h4>Participants:</h4>
+                <ul id="userList" class="list-group">
+                    {% for user in users %}
+                        <li class="list-group-item">
+                            {{ user.username }} 
+                            <span class="badge bg-primary">{{ user.role }}</span>
+                        </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-md-8">
+                <div class="video-container">
+                    <video id="localVideo" autoplay></video>
+                    <div class="controls">
+                        <button id="toggleCamera" onclick="toggleCamera()">🎥</button>
+                        <button id="toggleMic" onclick="toggleMic()">🎤</button>
+                        <button id="shareScreen" onclick="shareScreen()">🖥️</button>
+                    </div>
+                </div>
+                <div id="remoteVideos" class="row">
+                    <!-- Placeholder for remote videos -->
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div id="videoPreview" class="video-preview d-none">
+                    <div class="username-overlay">New User</div>
+                    <video id="previewVideo" autoplay></video>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="//cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+        const room = "{{ room }}";
+        let localStream;
+        let videoEnabled = true;
+        let audioEnabled = true;
+
+        socket.emit('join', { room });
+
+        socket.on('message', function(msg) {
+            const messages = document.getElementById('messages');
+            messages.textContent = msg;
+            messages.classList.remove('d-none');
+        });
+
+        socket.on('update_users', function(users) {
+            const userList = document.getElementById('userList');
+            userList.innerHTML = '';
+            users.forEach(user => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                li.textContent = `${user.username} (${user.role})`;
+                userList.appendChild(li);
+            });
+            updateRemoteVideos(users);
+        });
+
+        socket.on('update_screen_share', function(data) {
+            const screenVideo = document.getElementById('screenVideo');
+            if (!screenVideo) {
+                const container = document.querySelector('.col-md-8');
+                const screenContainer = document.createElement('div');
+                screenContainer.className = 'video-container';
+                screenContainer.innerHTML = `
+                    <video id="screenVideo" autoplay></video>
+                `;
+                container.appendChild(screenContainer);
+            }
+            document.getElementById('screenVideo').srcObject = data.stream_url;
+        });
+
+        socket.on('update_video_preview', function(data) {
+            const preview = document.getElementById('videoPreview');
+            const previewVideo = document.getElementById('previewVideo');
+            preview.querySelector('.username-overlay').textContent = data.username;
+            previewVideo.srcObject = data.stream_url;
+            preview.classList.remove('d-none');
+        });
+
+        function updateRemoteVideos(users) {
+            const remoteVideos = document.getElementById('remoteVideos');
+            remoteVideos.innerHTML = '';  // Clear existing videos
+
+            users.forEach((user, index) => {
+                if (index > 0) {  // Skip the local user
+                    const col = document.createElement('div');
+                    col.className = 'col-md-6 mb-3';
+                    col.innerHTML = `
+                        <div class="card">
+                            <div class="card-header">${user.username}</div>
+                            <div class="card-body">
+                                <div class="video-container">
+                                    <video id="remoteVideo${index}" autoplay></video>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    remoteVideos.appendChild(col);
+                }
+            });
+        }
+
+        function leaveRoom() {
+            socket.emit('leave', { room });
+            window.location.href = '/';
+        }
+
+        function copyRoomId() {
+            const roomIdInput = document.getElementById('roomId');
+            roomIdInput.select();
+            roomIdInput.setSelectionRange(0, 99999); // For mobile devices
+            document.execCommand('copy');
+            alert('Meeting room ID copied to clipboard!');
+        }
+
+        function toggleCamera() {
+            videoEnabled = !videoEnabled;
+            localStream.getVideoTracks()[0].enabled = videoEnabled;
+            document.getElementById('toggleCamera').textContent = videoEnabled ? '🎥' : '🚫🎥';
+        }
+
+        function toggleMic() {
+            audioEnabled = !audioEnabled;
+            localStream.getAudioTracks()[0].enabled = audioEnabled;
+            document.getElementById('toggleMic').textContent = audioEnabled ? '🎤' : '🚫🎤';
+        }
+
+        function shareScreen() {
+            navigator.mediaDevices.getDisplayMedia({ video: true }).then(stream => {
+                const screenTrack = stream.getVideoTracks()[0];
+                const screenStream = new MediaStream([screenTrack]);
+                socket.emit('screen_share', { room, stream_url: screenStream });
+            }).catch(err => {
+                console.error('Error sharing screen:', err);
+            });
+        }
+
+        // WebRTC video handling
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then((stream) => {
+                localStream = stream;
+                document.getElementById('localVideo').srcObject = stream;
+                // Further WebRTC handling to send/receive video streams here
+            })
+            .catch((error) => {
+                console.error('Error accessing media devices.', error);
+            });
+
+        // Handle new user video preview
+        socket.on('new_user', function(data) {
+            const username = data.username;
+            const stream = data.stream;
+            socket.emit('video_preview', { room, username, stream_url: stream });
+        });
+    </script>
+</body>
+</html>
